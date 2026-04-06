@@ -4,8 +4,8 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
 
 ## 🚀 Key Features
 
-  * **Ultra-Low Power:** Consumes **\~15µA** in deep sleep. The main cores only wake up to calculate and transmit data.
-  * **BTHome V2 Protocol:** Works natively with **Home Assistant** via Bluetooth—no custom integration or ESPHome YAML required.
+  * **Ultra-Low Power:** Can be as low as **\~15µA** in deep sleep on the ESP32 alone. Actual current depends on the board and any attached hardware. The main cores only wake up to calculate and transmit data.
+  * **BTHome V2 Protocol:** Works natively with **Home Assistant** via Bluetooth—no custom integration or ESPHome YAML required. See [bthome.io](https://bthome.io).
   * **Intelligent Reporting:**
       * **Wind Detected:** Updates every 5 seconds.
       * **Change Detection:** Updates immediately if the wind stops (e.g., 2 m/s → 0 m/s).
@@ -65,9 +65,19 @@ Upload the code to your ESP32. Open the Serial Monitor (115200 baud) to verify t
 
 -----
 
+## 🔌 Shelly Integration
+
+If you are using **Shelly** devices, the anemometer can also be configured as a **virtual component** in your Shelly setup. This does **not** require Home Assistant.
+
+### Example Use Case
+
+Use the anemometer to automatically close an awning with a **Shelly 2PM Gen3** when wind speed gets too high, without any extra wiring between the wind sensor and the Shelly device. The anemometer broadcasts wind data over BLE, and Shelly handles the automation logic on its side.
+
+-----
+
 ## 📉 Power Consumption Profile
 
-  * **Deep Sleep (ULP Active):** \~15µA
+  * **Deep Sleep (ULP Active):** \~15µA minimum, depending on the board and attached hardware
   * **BLE Transmission (1.5s):** \~100mA
   * **Total Battery Life:** \~1-2 years on a 2500mAh 18650 cell (depending on wind frequency).
 
@@ -82,4 +92,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙌 Credits
 
   * **NimBLE-Arduino** by [h2zero](https://github.com/h2zero)
-  * **BTHome V2** protocol by the BTHome team.
+  * **BTHome V2** protocol by [bthome.io](https://bthome.io).
