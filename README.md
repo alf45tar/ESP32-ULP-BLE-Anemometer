@@ -77,6 +77,25 @@ Upload the code to your ESP32. Open the Serial Monitor (115200 baud) to verify t
 
 If you are using **Shelly** devices, the anemometer can also be configured as a **virtual component** in your Shelly setup. This does **not** require Home Assistant.
 
+Depending on the Shelly virtual component setup, you may need the ESP32 BLE address.
+To print it directly from the board, upload this small sketch and read the value from the Serial Monitor:
+
+```cpp
+#include <Arduino.h>
+#include <NimBLEDevice.h>
+
+void setup() {
+  Serial.begin(115200);
+  NimBLEDevice::init("ESP32");
+}
+
+void loop() {
+  BLEAddress localAddress = NimBLEDevice::getAddress();
+  Serial.println(localAddress.toString().c_str());
+  delay(1000);
+}
+```
+
 ### Example Use Case
 
 Use the anemometer to automatically close an awning with a **Shelly 2PM Gen3** when wind speed gets too high, without any extra wiring between the wind sensor and the Shelly device. The anemometer broadcasts wind data over BLE, and Shelly handles the automation logic on its side.
