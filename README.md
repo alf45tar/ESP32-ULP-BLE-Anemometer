@@ -7,9 +7,9 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
   * **Ultra-Low Power:** Can be as low as **\~15µA** in deep sleep on the ESP32 alone. Actual current depends on the board and any attached hardware. The main cores only wake up to calculate and transmit data.
   * **BTHome V2 Protocol:** Works natively with **Home Assistant** via Bluetooth—no custom integration or ESPHome YAML required. See [bthome.io](https://bthome.io).
   * **Intelligent Reporting:**
-      * **Wind Detected:** Updates every 5 seconds.
-      * **Change Detection:** Updates immediately if the wind stops (e.g., 2 m/s → 0 m/s).
-      * **Heartbeat:** Sends a "still alive" update every 60 seconds during calm periods.
+      * **Wind Detected:** Typically reports on the next 5-second wake cycle while wind is present.
+      * **Change Detection:** Tries to report a speed change as soon as it is noticed on the next wake cycle.
+      * **Heartbeat:** Sends a periodic "still alive" update, usually about every 60 seconds during calm periods.
   * **Hardware Debouncing:** ULP-based software sampling filters out mechanical reed switch "bounce."
 
 -----
@@ -39,7 +39,7 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
 Install the following libraries via the Arduino Library Manager:
 
   * [**NimBLE-Arduino**](https://github.com/h2zero/NimBLE-Arduino) (Lightweight Bluetooth LE)
-  * [**BTHomeV2**](https://www.google.com/search?q=https://github.com/Chreece/BTHomeV2) (BTHome data formatting)
+  * [**BTHomeV2-Arduino**](https://github.com/deeja/BTHomeV2-Arduino) (BTHome data formatting)
 
 ### 2\. Configuration
 
@@ -50,6 +50,14 @@ const float RADIUS_METERS      = 0.071; // Center to cup middle
 const float CALIBRATION_FACTOR = 2.5;   // Aerodynamic factor
 const int   PULSES_PER_REV     = 2;     // Number of magnets in your sensor
 ```
+
+**Tuning Guide:**
+
+* **RADIUS_METERS**: Measure from the center of the shaft to the center of a cup.
+* **PULSES_PER_REV**: Set this to the number of magnet passes per full revolution.
+* **CALIBRATION_FACTOR**: Adjust this if you want accurate wind-speed measurements. Compare the reading against a known wind source or a reference sensor, then increase or decrease this factor until they match closely.
+
+If you are only using the anemometer for threshold-based automation, such as closing an awning with a Shelly device, a precise calibration is usually not required. In that case, a stable and repeatable reading is enough to trigger the chosen wind-speed threshold.
 
 ### 3\. Flash
 
