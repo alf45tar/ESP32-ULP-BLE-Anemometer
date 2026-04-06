@@ -38,21 +38,28 @@
 #include "esp32/ulp.h"
 #include "driver/rtc_io.h"
 #include "soc/rtc_io_reg.h"
+#include "esp_log.h"
+
+// Logging tag
+static const char *TAG = "ANEMOMETER";
 
 // --------------------------------------------------------------------------------------
 // CONFIGURATION & CALIBRATION
 // --------------------------------------------------------------------------------------
-#define SENSOR_GPIO            GPIO_NUM_32  // Must be RTC-capable (GPIO 0, 2, 4, 12-15, 25-27, 32-39)
+#define SENSOR_GPIO            GPIO_NUM_4   // Must be RTC-capable
+                                            // ESP32:    GPIO 0, 2, 4, 12-15, 25-27, 32-39
+                                            // ESP32-S3: GPIO 0-21
 const float RADIUS_METERS      = 0.071;     // Distance from center to the middle of the cup (e.g., 5cm = 0.05m)
 const float CALIBRATION_FACTOR = 2.5;       // Aerodynamic compensation (usually between 2.0 and 3.0)
 const int   PULSES_PER_REV     = 2;         // Set to 2 because we have 2 magnets
 const uint64_t SLEEP_TIME_US   = 5000000;   // 5 seconds sleep
 const int   HEARTBEAT_CYCLES   = 12;        // 12 * 5s = 60s update
 
-#define BATTERY_ADC_PIN         34          // Must be an ADC-capable pin (GPIO 32-39) - Battery measurement (expects a resistor divider to keep ADC voltage <= 3.3V)
+#define BATTERY_ADC_PIN         14          // Must be an ADC-capable pin
+                                            // Battery measurement (expects a resistor divider to keep ADC voltage <= 3.3V)
 const float ADC_REFERENCE_VOLT  = 3.3;
 const float ADC_MAX_READING     = 4095.0;
-const float VOLTAGE_DIV_RATIO   = 2.0;      // 100k/100k divider -> battery voltage is ADC voltage * 2
+const float VOLTAGE_DIV_RATIO   = 2.0;      // Resistor divider -> battery voltage is ADC voltage * 2
 const float BATTERY_MIN_VOLT    = 3.2;      // 0%
 const float BATTERY_MAX_VOLT    = 4.2;      // 100%
 
@@ -131,7 +138,9 @@ void init_ulp_program() {
 // MAIN EXECUTION (Wakeup Logic)
 // --------------------------------------------------------------------------------------
 void setup() {
-  Serial.begin(115200);
+  // Logging is already initialized by ESP-IDF at boot
+  ESP_LOGI(TAG, "Anemometer setup starting...");
+
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -170,15 +179,15 @@ void setup() {
       *    A single analog read is negligible in terms of power consumption
       *    compared to a BLE transmission. It is not the primary battery drain.
       * 2. Resistor Divider Static Drain:
-      *    Assuming a 100k/100k divider (top/bottom), the continuous leakage
+      *    Assuming a 100k/100k divider, the continuous leakage
       *    current is calculated as:
-      *         I = V_bat / (R_top + R_bottom)
       *         I ≈ 4.2V / 200,000Ω ≈ 21µA
-      * This 21µA drain is CONTINUOUS, even during deep sleep.
-      * Depending on the hardware specs, this leakage may exceed the
-      * microcontroller's own deep sleep current.
-      * Optimization: some board designs consider using a MOSFET to switch the divider
-      * only during measurement if further power saving is required.
+      *    Assuming a 470k/470k divider, the continuous leakage
+      *    current is calculated as:
+      *         I ≈ 4.2V / 940,000Ω ≈ 4.5µA
+      * This 4.5µA drain is CONTINUOUS, even during deep sleep.
+      * This is such a low value that the internal chemical self-discharge
+      * of the battery itself probably consumes more.
       */
       float batteryVoltage = readBatteryVoltage();
       uint8_t batteryPercent = batteryPercentFromVoltage(batteryVoltage);
@@ -196,7 +205,7 @@ void setup() {
       pAdvertising->setAdvertisementData(pAdvData);
       pAdvertising->start();
 
-      Serial.printf("Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | Battery: %d%% (%.2fV) | MAC: %s (Reason: %s)\n",
+      ESP_LOGI(TAG, "Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | Battery: %d%% (%.2fV) | MAC: %s (Reason: %s)",
           transitions/2, rps, speedMPS, batteryPercent, batteryVoltage, NimBLEDevice::getAddress().toString().c_str(), speed_changed ? "Change" : "Heartbeat");
 
       delay(1500); // Wait for scanner to catch the change
@@ -213,8 +222,7 @@ void setup() {
   }
 
   // Go back to sleep
-  Serial.println("Entering Deep Sleep...");
-  Serial.flush();
+  ESP_LOGI(TAG, "Entering Deep Sleep...");
   esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
   esp_deep_sleep_start();
 }
