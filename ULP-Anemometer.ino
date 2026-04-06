@@ -3,22 +3,22 @@
  * ESP32 ULTRA-LOW POWER (ULP) BLE ANEMOMETER
  * ======================================================================================
  * * DESCRIPTION:
- * This firmware transforms an ESP32 into a high-efficiency wind speed sensor. 
- * It uses the ULP (Ultra-Low Power) co-processor to count pulses from a reed 
+ * This firmware transforms an ESP32 into a high-efficiency wind speed sensor.
+ * It uses the ULP (Ultra-Low Power) co-processor to count pulses from a reed
  * switch/hall sensor while the main ESP32 cores are in Deep Sleep.
  * * HOW IT WORKS:
  * 1. SLEEP: The ESP32 enters Deep Sleep (consuming ~10-15µA).
- * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 32 
+ * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 32
  * every few milliseconds to detect magnet passes (edge detection).
  * 3. WAKEUP: Every 5 seconds, the ESP32 wakes up to process the ULP data.
  * 4. LOGIC ENGINE:
  * - If Wind Speed > 0: Calculates speed and broadcasts immediately via BLE.
  * - If Speed Changes (e.g., 2m/s -> 0m/s): Broadcasts immediately to show the drop.
  * - If No Wind: Skips BLE transmission to save battery, incrementing a counter.
- * - Heartbeat: Every 60 seconds, it forces a broadcast (even if 0m/s) so Home 
+ * - Heartbeat: Every 60 seconds, it forces a broadcast (even if 0m/s) so Home
  * Assistant knows the sensor is still online.
  * * DATA PROTOCOL:
- * Uses BTHome V2 (Bluetooth Low Energy). Compatible with Home Assistant 
+ * Uses BTHome V2 (Bluetooth Low Energy). Compatible with Home Assistant
  * "Bluetooth" and "BTHome" integrations out of the box.
  * * HARDWARE NOTES:
  * - Sensor Pin: GPIO 32 (Must be an RTC-capable pin).
@@ -49,6 +49,30 @@ const int   PULSES_PER_REV     = 2;         // Set to 2 because we have 2 magnet
 const uint64_t SLEEP_TIME_US   = 5000000;   // 5 seconds sleep
 const int   HEARTBEAT_CYCLES   = 12;        // 12 * 5s = 60s update
 
+#define BATTERY_ADC_PIN         34          // Must be an ADC-capable pin (GPIO 32-39) - Battery measurement (expects a resistor divider to keep ADC voltage <= 3.3V)
+const float ADC_REFERENCE_VOLT  = 3.3;
+const float ADC_MAX_READING     = 4095.0;
+const float VOLTAGE_DIV_RATIO   = 2.0;      // 100k/100k divider -> battery voltage is ADC voltage * 2
+const float BATTERY_MIN_VOLT    = 3.2;      // 0%
+const float BATTERY_MAX_VOLT    = 4.2;      // 100%
+
+float readBatteryVoltage() {
+  uint16_t raw = analogRead(BATTERY_ADC_PIN);
+  float adcVoltage = (raw / ADC_MAX_READING) * ADC_REFERENCE_VOLT;
+  return adcVoltage * VOLTAGE_DIV_RATIO;
+}
+
+uint8_t batteryPercentFromVoltage(float batteryVoltage) {
+  if (batteryVoltage <= BATTERY_MIN_VOLT) {
+    return 0;
+  }
+  if (batteryVoltage >= BATTERY_MAX_VOLT) {
+    return 100;
+  }
+  float scaled = (batteryVoltage - BATTERY_MIN_VOLT) * 100.0 / (BATTERY_MAX_VOLT - BATTERY_MIN_VOLT);
+  return (uint8_t)(scaled + 0.5);
+}
+
 // --------------------------------------------------------------------------------------
 // RTC MEMORY MAPPING (Persists during Deep Sleep)
 // --------------------------------------------------------------------------------------
@@ -67,28 +91,28 @@ void init_ulp_program() {
   int rtc_pin = rtc_io_number_get(SENSOR_GPIO);
 
   const ulp_insn_t ulp_program[] = {
-    M_LABEL(0), 
+    M_LABEL(0),
     // 1. Read current state of RTC GPIO
-    I_RD_REG(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT_S + rtc_pin, RTC_GPIO_IN_NEXT_S + rtc_pin), 
-    
+    I_RD_REG(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT_S + rtc_pin, RTC_GPIO_IN_NEXT_S + rtc_pin),
+
     // 2. Load last state
     I_MOVI(R2, VAR_LAST_STATE),
     I_LD(R1, R2, 0),
-    
+
     // 3. Compare current (R0) and last (R1)
     I_SUBR(R3, R0, R1),
     M_BXZ(1),           // If no change, jump to LABEL 1
 
     // 4. Update last state and increment counter
-    I_ST(R0, R2, 0),    
+    I_ST(R0, R2, 0),
     I_MOVI(R2, VAR_COUNTER),
     I_LD(R1, R2, 0),
-    I_ADDI(R1, R1, 1),  
-    I_ST(R1, R2, 0),    
+    I_ADDI(R1, R1, 1),
+    I_ST(R1, R2, 0),
 
-    M_LABEL(1),         
+    M_LABEL(1),
     I_DELAY(30000),     // Sampling rate (approx 3-5ms debounce)
-    M_BX(0),            
+    M_BX(0),
   };
 
   memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
@@ -99,7 +123,7 @@ void init_ulp_program() {
   rtc_gpio_set_direction(SENSOR_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
   rtc_gpio_pullup_en(SENSOR_GPIO);
   rtc_gpio_pulldown_dis(SENSOR_GPIO);
-  
+
   ulp_run(PROG_START);
 }
 
@@ -108,6 +132,7 @@ void init_ulp_program() {
 // --------------------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
@@ -138,22 +163,42 @@ void setup() {
       // Start BLE advertisement
       NimBLEDevice::init("Wind Sensor");
       NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-      
+
+      // Battery is sampled only when you actually advertise, not on every wake cycle
+      /*
+      * 1. ADC Measurement Cost:
+      *    A single analog read is negligible in terms of power consumption
+      *    compared to a BLE transmission. It is not the primary battery drain.
+      * 2. Resistor Divider Static Drain:
+      *    Assuming a 100k/100k divider (top/bottom), the continuous leakage
+      *    current is calculated as:
+      *         I = V_bat / (R_top + R_bottom)
+      *         I ≈ 4.2V / 200,000Ω ≈ 21µA
+      * This 21µA drain is CONTINUOUS, even during deep sleep.
+      * Depending on the hardware specs, this leakage may exceed the
+      * microcontroller's own deep sleep current.
+      * Optimization: some board designs consider using a MOSFET to switch the divider
+      * only during measurement if further power saving is required.
+      */
+      float batteryVoltage = readBatteryVoltage();
+      uint8_t batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+
       BtHomeV2Device btHome("Anemometer", "Wind Sensor", false);
       btHome.addSpeedMs(speedMPS);
-      
+      btHome.addBatteryPercentage(batteryPercent);
+
       uint8_t advDataRaw[MAX_ADVERTISEMENT_SIZE];
       size_t size = btHome.getAdvertisementData(advDataRaw);
       NimBLEAdvertisementData pAdvData;
       std::vector<uint8_t> data(advDataRaw, advDataRaw + size);
       pAdvData.addData(data);
-      
+
       pAdvertising->setAdvertisementData(pAdvData);
       pAdvertising->start();
 
-      Serial.printf("Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | MAC: %s (Reason: %s)\n",
-                  transitions/2, rps, speedMPS, NimBLEDevice::getAddress().toString().c_str(), speed_changed ? "Change" : "Heartbeat");
-      
+      Serial.printf("Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | Battery: %d%% (%.2fV) | MAC: %s (Reason: %s)\n",
+          transitions/2, rps, speedMPS, batteryPercent, batteryVoltage, NimBLEDevice::getAddress().toString().c_str(), speed_changed ? "Change" : "Heartbeat");
+
       delay(1500); // Wait for scanner to catch the change
       pAdvertising->stop();
       NimBLEDevice::deinit(true);
