@@ -21,7 +21,7 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
 1.  **ESP32 Development Board** (e.g., DevKit V1, WROOM-32).
 2.  **Anemometer** (3-cup type with a Reed Switch).
 3.  **Battery:** Li-ion 18650 or LiPo (recommended).
-4.  **Resistor:** 10kΩ (if your sensor doesn't have a built-in pull-up).
+4.  **Resistor:** 10kΩ (if your sensor pin doesn't have a built-in pull-up).
 
 ### Bill of Materials
 
@@ -112,7 +112,7 @@ void loop() {
 
 ### Example Use Case
 
-Use the anemometer to automatically close an awning with a **Shelly 2PM Gen3** when wind speed gets too high, without any extra wiring between the wind sensor and the Shelly device. The anemometer broadcasts wind data over BLE, and Shelly handles the automation logic on its side.
+Use the anemometer to automatically close an awning with a **Shelly 2PM Gen3** when wind speed gets too high, without any extra wiring between the wind sensor and the Shelly device. The anemometer broadcasts wind data over BLE, and Shelly handles the automation logic on its side. In this setup, the ESP32 board and battery are hidden inside the square bar, which also supports the anemometer using an interlocking fit (no screw required).
 
 ![Anemometer](anemometer-installed.jpg)
 
