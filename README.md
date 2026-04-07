@@ -1,3 +1,5 @@
+![3D Printed Anemometer](anemometer-3d.jpg)
+
 # 🌀 ESP32 ULP BLE Anemometer (BTHome V2)
 
 A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP32. This project leverages the **ULP (Ultra-Low Power) co-processor** to monitor wind pulses while the main CPU is in Deep Sleep, allowing for years of battery life.
@@ -17,16 +19,28 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
 ## 🛠 Hardware Requirements
 
 1.  **ESP32 Development Board** (e.g., DevKit V1, WROOM-32).
-2.  **Anemometer** (3-cup type with a Reed Switch or Hall Effect sensor).
+2.  **Anemometer** (3-cup type with a Reed Switch).
 3.  **Battery:** Li-ion 18650 or LiPo (recommended).
 4.  **Resistor:** 10kΩ (if your sensor doesn't have a built-in pull-up).
 
+### Bill of Materials
+
+| Item | Quantity | Notes |
+| :--- | :--- | :--- |
+| ESP32 development board | 1 | Use a board with an onboard battery sesnor (divider) if possible |
+| 3D-printed anemometer | 1 | Main wind-sensing body |
+| 608 bearing 8x22x7 mm | 1 | Very common bearing for shaft support |
+| M3 heat-set insert | 1 | For connecting the main body to the support |
+| M3 hex socket cap screw M3x12 | 1 | Fastens the main body to the support |
+| Reed switch | 1 | Wind pulse sensor |
+| Magnet 6x3 mm | 2 | For triggering the reed switch |
+| Battery | 1 | Li-ion 18650 or LiPo |
+
 ### Wiring
 
-| Component | ESP32 Pin | Note |
-| :--- | :--- | :--- |
-| **Anemometer Signal** | **GPIO 32** | Must be an RTC-capable pin |
-| **Anemometer GND** | **GND** | |
+Connect the reed switch between SENSOR_GPIO pin and GND.
+
+For battery monitoring, a board with an onboard battery divider is recommended.
 
 *Note: Avoid GPIO 0, 2, 12, and 15 for the sensor as they are "strapping pins" and can prevent the ESP32 from booting if held LOW/HIGH by the magnet.*
 
@@ -99,6 +113,8 @@ void loop() {
 ### Example Use Case
 
 Use the anemometer to automatically close an awning with a **Shelly 2PM Gen3** when wind speed gets too high, without any extra wiring between the wind sensor and the Shelly device. The anemometer broadcasts wind data over BLE, and Shelly handles the automation logic on its side.
+
+![Anemometer](anemometer-installed.jpg)
 
 -----
 
