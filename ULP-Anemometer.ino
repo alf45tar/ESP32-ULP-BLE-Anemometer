@@ -74,8 +74,8 @@ const uint32_t BATTERY_MAX         = 4200;  // 4.2V = 100%
 uint32_t readBatteryVoltage() {
   /* To ensure accurate ADC readings with high-value resistors, a 0.1uF (100nF)
    * ceramic capacitor MUST be placed between the ADC pin and GND.
-   * Without the 0.1uF "reservoir" cap, the 470k 
-   * source impedance causes a significant voltage drop (sag) during 
+   * Without the 0.1uF "reservoir" cap, the 470k
+   * source impedance causes a significant voltage drop (sag) during
    * the sampling window, resulting in artificially low readings.
    * Resistor Divider Static Drain: assuming a 470k/470k divider,
    * the continuous leakage current is calculated as:
@@ -110,7 +110,7 @@ enum {
 void init_ulp_program() {
   int rtc_pin = rtc_io_number_get(SENSOR_GPIO);
   if (rtc_pin < 0) {
-    ESP_LOGE("The GPIO5%d is not an RTC IO", SENSOR_GPIO);
+    ESP_LOGE(TAG, "GPIO %d is not an RTC IO pin", SENSOR_GPIO);
     return;
   }
 
@@ -231,7 +231,7 @@ void setup() {
     // First boot
     init_ulp_program();
   }
-  
+
   // Go back to sleep
   ESP_LOGI(TAG, "Entering Deep Sleep...");
   // Wake me up every SLEEP_TIME uS
