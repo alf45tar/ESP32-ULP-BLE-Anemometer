@@ -1,4 +1,4 @@
-/**
+/*
  * ======================================================================================
  * ESP32 ULTRA-LOW POWER (ULP) BLE ANEMOMETER
  * ======================================================================================
@@ -8,7 +8,7 @@
  * switch/hall sensor while the main ESP32 cores are in Deep Sleep.
  * * HOW IT WORKS:
  * 1. SLEEP: The ESP32 enters Deep Sleep (consuming ~10-15µA).
- * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 32
+ * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 4
  * every few milliseconds to detect magnet passes (edge detection).
  * 3. WAKEUP: Every 5 seconds, the ESP32 wakes up to process the ULP data.
  * 4. LOGIC ENGINE:
@@ -35,10 +35,18 @@
 #include <Arduino.h>
 #include <BtHomeV2Device.h>
 #include "NimBLEDevice.h"
-#include "esp32/ulp.h"
+
+// Conditional headers for ULP
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    #include "esp32s3/ulp.h"
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    #include "esp32/ulp.h"
+#endif
+
 #include "driver/rtc_io.h"
 #include "soc/rtc_io_reg.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 
 // Logging tag
 static const char *TAG = "ANEMOMETER";
@@ -49,35 +57,40 @@ static const char *TAG = "ANEMOMETER";
 #define SENSOR_GPIO            GPIO_NUM_4   // Must be RTC-capable
                                             // ESP32:    GPIO 0, 2, 4, 12-15, 25-27, 32-39
                                             // ESP32-S3: GPIO 0-21
+                                            // Avoid GPIO 0, 2, 12, and 15 for the sensor as they are "strapping pins"
+                                            // and can prevent the ESP32 from booting if held LOW/HIGH by the magnet
 const float RADIUS_METERS      = 0.071;     // Distance from center to the middle of the cup (e.g., 5cm = 0.05m)
 const float CALIBRATION_FACTOR = 2.5;       // Aerodynamic compensation (usually between 2.0 and 3.0)
 const int   PULSES_PER_REV     = 2;         // Set to 2 because we have 2 magnets
 const uint64_t SLEEP_TIME_US   = 5000000;   // 5 seconds sleep
 const int   HEARTBEAT_CYCLES   = 12;        // 12 * 5s = 60s update
 
-#define BATTERY_ADC_PIN         14          // Must be an ADC-capable pin
+#define BATTERY_ADC_PIN         GPIO_NUM_14 // Must be an ADC-capable pin
                                             // Battery measurement (expects a resistor divider to keep ADC voltage <= 3.3V)
-const float ADC_REFERENCE_VOLT  = 3.3;
-const float ADC_MAX_READING     = 4095.0;
-const float VOLTAGE_DIV_RATIO   = 2.0;      // Resistor divider -> battery voltage is ADC voltage * 2
-const float BATTERY_MIN_VOLT    = 3.2;      // 0%
-const float BATTERY_MAX_VOLT    = 4.2;      // 100%
+const uint8_t  VOLTAGE_DIV_RATIO   = 2;     // Resistor divider -> battery voltage is ADC voltage * 2
+const uint32_t BATTERY_MIN         = 3200;  // 3.2V = 0%
+const uint32_t BATTERY_MAX         = 4200;  // 4.2V = 100%
 
-float readBatteryVoltage() {
-  uint16_t raw = analogRead(BATTERY_ADC_PIN);
-  float adcVoltage = (raw / ADC_MAX_READING) * ADC_REFERENCE_VOLT;
-  return adcVoltage * VOLTAGE_DIV_RATIO;
+uint32_t readBatteryVoltage() {
+  /* To ensure accurate ADC readings with high-value resistors, a 0.1uF (100nF)
+   * ceramic capacitor MUST be placed between the ADC pin and GND.
+   * Without the 0.1uF "reservoir" cap, the 470k 
+   * source impedance causes a significant voltage drop (sag) during 
+   * the sampling window, resulting in artificially low readings.
+   * Resistor Divider Static Drain: assuming a 470k/470k divider,
+   * the continuous leakage current is calculated as:
+   *         I ≈ 4.2V / 940,000Ω ≈ 4.5µA
+   * This 4.5µA drain is CONTINUOUS, even during deep sleep.
+   * This is such a low value that the internal chemical self-discharge
+   * of the battery itself probably consumes more.
+   */
+  uint32_t voltage = analogReadMilliVolts(BATTERY_ADC_PIN); // Read the ADC voltage using the built in factory calibration, no conversion needed.
+  return voltage * VOLTAGE_DIV_RATIO;
 }
 
-uint8_t batteryPercentFromVoltage(float batteryVoltage) {
-  if (batteryVoltage <= BATTERY_MIN_VOLT) {
-    return 0;
-  }
-  if (batteryVoltage >= BATTERY_MAX_VOLT) {
-    return 100;
-  }
-  float scaled = (batteryVoltage - BATTERY_MIN_VOLT) * 100.0 / (BATTERY_MAX_VOLT - BATTERY_MIN_VOLT);
-  return (uint8_t)(scaled + 0.5);
+uint8_t batteryPercentFromVoltage(uint32_t batteryVoltage) {
+  uint32_t safeVoltage = constrain(batteryVoltage, BATTERY_MIN, BATTERY_MAX);
+  return map(safeVoltage, BATTERY_MIN, BATTERY_MAX, 0, 100);
 }
 
 // --------------------------------------------------------------------------------------
@@ -96,35 +109,48 @@ enum {
 // --------------------------------------------------------------------------------------
 void init_ulp_program() {
   int rtc_pin = rtc_io_number_get(SENSOR_GPIO);
+  if (rtc_pin < 0) {
+    ESP_LOGE("The GPIO5%d is not an RTC IO", SENSOR_GPIO);
+    return;
+  }
 
   const ulp_insn_t ulp_program[] = {
-    M_LABEL(0),
+    M_LABEL(0),                                               // LABEL 0
     // 1. Read current state of RTC GPIO
     I_RD_REG(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT_S + rtc_pin, RTC_GPIO_IN_NEXT_S + rtc_pin),
-
+                                                              // R0 = digitalRead(SENSOR_GPIO)
     // 2. Load last state
-    I_MOVI(R2, VAR_LAST_STATE),
-    I_LD(R1, R2, 0),
+    I_MOVI(R2, VAR_LAST_STATE),                               // R2 = VAR_LAST_STATE
+    I_LD(R1, R2, 0),                                          // R1 = R2*
 
     // 3. Compare current (R0) and last (R1)
-    I_SUBR(R3, R0, R1),
-    M_BXZ(1),           // If no change, jump to LABEL 1
+    I_SUBR(R3, R0, R1),                                       // R3 = R0 - R1
+    M_BXZ(1),           // If no change, jump to LABEL 1      // IF R3 == 0 GOTO LABEL 1
 
     // 4. Update last state and increment counter
-    I_ST(R0, R2, 0),
-    I_MOVI(R2, VAR_COUNTER),
-    I_LD(R1, R2, 0),
-    I_ADDI(R1, R1, 1),
-    I_ST(R1, R2, 0),
+    I_ST(R0, R2, 0),                                          // R2* = R0
+    I_MOVI(R2, VAR_COUNTER),                                  // R2 = VAR_COUNTER
+    I_LD(R1, R2, 0),                                          // R1 = R2*
+    I_ADDI(R1, R1, 1),                                        // R1 = R1 + 1
+    I_ST(R1, R2, 0),                                          // R2* = R1
 
-    M_LABEL(1),
-    I_DELAY(30000),     // Sampling rate (approx 3-5ms debounce)
-    M_BX(0),
+    M_LABEL(1),                                               // LABEL 1
+    #if defined(CONFIG_IDF_TARGET_ESP32S3)
+      I_HALT()                                                // S3: Stop and wait for the next timer trigger
+    #else
+      I_DELAY(30000),                                         // WAIT 3.5ms (30000/8.5MHz) simple debouce
+      M_BX(0),                                                // GOTO LABEL 0
+    #endif
   };
 
   memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
   size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
   ulp_process_macros_and_load(PROG_START, ulp_program, &size);
+
+// --- S3 SPECIFIC TIMER SETUP ---
+  #if defined(CONFIG_IDF_TARGET_ESP32S3)
+    ulp_set_wakeup_period(0, 10000); // Trigger every 10ms (100Hz)
+  #endif
 
   rtc_gpio_init(SENSOR_GPIO);
   rtc_gpio_set_direction(SENSOR_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
@@ -140,8 +166,6 @@ void init_ulp_program() {
 void setup() {
   // Logging is already initialized by ESP-IDF at boot
   ESP_LOGI(TAG, "Anemometer setup starting...");
-
-  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
@@ -169,28 +193,15 @@ void setup() {
       RTC_SLOW_MEM[VAR_SKIP_COUNT] = 0;
       RTC_SLOW_MEM[VAR_LAST_SPEED] = current_speed_int;
 
+      // Battery is sampled only when you actually advertise, not on every wake cycle
+      // A single analog read is negligible in terms of power consumption
+      // compared to a BLE transmission. It is not the primary battery drain.
+      uint32_t batteryVoltage = readBatteryVoltage();
+      uint8_t  batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+
       // Start BLE advertisement
       NimBLEDevice::init("Wind Sensor");
       NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-
-      // Battery is sampled only when you actually advertise, not on every wake cycle
-      /*
-      * 1. ADC Measurement Cost:
-      *    A single analog read is negligible in terms of power consumption
-      *    compared to a BLE transmission. It is not the primary battery drain.
-      * 2. Resistor Divider Static Drain:
-      *    Assuming a 100k/100k divider, the continuous leakage
-      *    current is calculated as:
-      *         I ≈ 4.2V / 200,000Ω ≈ 21µA
-      *    Assuming a 470k/470k divider, the continuous leakage
-      *    current is calculated as:
-      *         I ≈ 4.2V / 940,000Ω ≈ 4.5µA
-      * This 4.5µA drain is CONTINUOUS, even during deep sleep.
-      * This is such a low value that the internal chemical self-discharge
-      * of the battery itself probably consumes more.
-      */
-      float batteryVoltage = readBatteryVoltage();
-      uint8_t batteryPercent = batteryPercentFromVoltage(batteryVoltage);
 
       BtHomeV2Device btHome("Anemometer", "Wind Sensor", false);
       btHome.addSpeedMs(speedMPS);
@@ -217,13 +228,18 @@ void setup() {
     }
 
   } else {
-    // Fresh boot
+    // First boot
     init_ulp_program();
   }
-
+  
   // Go back to sleep
   ESP_LOGI(TAG, "Entering Deep Sleep...");
+  // Wake me up every SLEEP_TIME uS
   esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
+
+  // Keep the RTC peripherals powered for the ULP to read the GPIOs
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
   esp_deep_sleep_start();
 }
 
