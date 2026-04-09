@@ -9,7 +9,7 @@
  * * HOW IT WORKS:
  * 1. SLEEP: The ESP32 enters Deep Sleep (consuming ~10-15µA).
  * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 4
- * every few milliseconds to detect magnet passes (edge detection).
+ * every 10 milliseconds to detect magnet passes (edge detection).
  * 3. WAKEUP: Every 5 seconds, the ESP32 wakes up to process the ULP data.
  * 4. LOGIC ENGINE:
  * - If Wind Speed > 0: Calculates speed and broadcasts immediately via BLE.
@@ -21,7 +21,7 @@
  * Uses BTHome V2 (Bluetooth Low Energy). Compatible with Home Assistant
  * "Bluetooth" and "BTHome" integrations out of the box.
  * * HARDWARE NOTES:
- * - Sensor Pin: GPIO 32 (Must be an RTC-capable pin).
+ * - Sensor Pin: GPIO 4 (Must be an RTC-capable pin).
  * - Pulses: 2 pulses per revolution (assuming 2 magnets).
  * - Radius: 0.071m (Center to cup middle).
  * - Calibration: 2.5x factor to compensate for cup drag/aerodynamics.
@@ -84,7 +84,9 @@ uint32_t readBatteryVoltage() {
    * This is such a low value that the internal chemical self-discharge
    * of the battery itself probably consumes more.
    */
-  uint32_t voltage = analogReadMilliVolts(BATTERY_ADC_PIN); // Read the ADC voltage using the built in factory calibration, no conversion needed.
+
+  // Read the ADC voltage using the built in factory calibration, no conversion needed.
+  uint32_t voltage = analogReadMilliVolts(BATTERY_ADC_PIN);
   return voltage * VOLTAGE_DIV_RATIO;
 }
 
@@ -135,22 +137,14 @@ void init_ulp_program() {
     I_ST(R1, R2, 0),                                          // R2* = R1
 
     M_LABEL(1),                                               // LABEL 1
-    #if defined(CONFIG_IDF_TARGET_ESP32S3)
-      I_HALT()                                                // S3: Stop and wait for the next timer trigger
-    #else
-      I_DELAY(30000),                                         // WAIT 3.5ms (30000/8.5MHz) simple debouce
-      M_BX(0),                                                // GOTO LABEL 0
-    #endif
+    I_HALT()            // Stop and wait for the next timer trigger
   };
 
   memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
   size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
   ulp_process_macros_and_load(PROG_START, ulp_program, &size);
 
-// --- S3 SPECIFIC TIMER SETUP ---
-  #if defined(CONFIG_IDF_TARGET_ESP32S3)
-    ulp_set_wakeup_period(0, 10000); // Trigger every 10ms (100Hz)
-  #endif
+  ulp_set_wakeup_period(0, 10000); // Trigger ULP program every 10ms (100Hz)
 
   rtc_gpio_init(SENSOR_GPIO);
   rtc_gpio_set_direction(SENSOR_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
@@ -165,7 +159,7 @@ void init_ulp_program() {
 // --------------------------------------------------------------------------------------
 void setup() {
   // Logging is already initialized by ESP-IDF at boot
-  ESP_LOGI(TAG, "Anemometer setup starting...");
+  ESP_LOGI(TAG, "Wake up evey %d sec to process the ULP data...", SLEEP);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
@@ -216,10 +210,13 @@ void setup() {
       pAdvertising->setAdvertisementData(pAdvData);
       pAdvertising->start();
 
+      std::string deviceAddr = NimBLEDevice::getAddress().toString();
       ESP_LOGI(TAG, "Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | Battery: %d%% (%.2fV) | MAC: %s (Reason: %s)",
-          transitions/2, rps, speedMPS, batteryPercent, batteryVoltage, NimBLEDevice::getAddress().toString().c_str(), speed_changed ? "Change" : "Heartbeat");
+          (int)transitions/2, rps, speedMPS, batteryPercent, (float)batteryVoltage/1000.0, deviceAddr.c_str(), speed_changed ? "Change" : "Heartbeat");
 
-      delay(1500); // Wait for scanner to catch the change
+      delay(1000); // Wait for scanner to catch the change
+                   // 500ms is the lower limit, 1 sec is more battery consuming but more safe
+
       pAdvertising->stop();
       NimBLEDevice::deinit(true);
     } else {
