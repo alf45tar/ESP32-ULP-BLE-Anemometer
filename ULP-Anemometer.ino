@@ -3,32 +3,31 @@
  * ESP32 ULTRA-LOW POWER (ULP) BLE ANEMOMETER
  * ======================================================================================
  * * DESCRIPTION:
- * This firmware transforms an ESP32 into a high-efficiency wind speed sensor.
- * It uses the ULP (Ultra-Low Power) co-processor to count pulses from a reed
- * switch/hall sensor while the main ESP32 cores are in Deep Sleep.
+ *    This firmware transforms an ESP32/ESP32-S3 into a high-efficiency wind speed sensor.
+ *    It uses the ULP (Ultra-Low Power) co-processor to count pulses from a reed
+ *    switch while the main ESP32 cores are in Deep Sleep.
  * * HOW IT WORKS:
- * 1. SLEEP: The ESP32 enters Deep Sleep (consuming ~10-15µA).
- * 2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 4
- * every 10 milliseconds to detect magnet passes (edge detection).
- * 3. WAKEUP: Every 5 seconds, the ESP32 wakes up to process the ULP data.
- * 4. LOGIC ENGINE:
- * - If Wind Speed > 0: Calculates speed and broadcasts immediately via BLE.
- * - If Speed Changes (e.g., 2m/s -> 0m/s): Broadcasts immediately to show the drop.
- * - If No Wind: Skips BLE transmission to save battery, incrementing a counter.
- * - Heartbeat: Every 60 seconds, it forces a broadcast (even if 0m/s) so Home
- * Assistant knows the sensor is still online.
+ *    1. SLEEP: The ESP32 enters Deep Sleep (consuming ~10-15µA).
+ *    2. ULP MONITORING: The ULP co-processor remains active, sampling GPIO 4
+ *        every 10 milliseconds to detect magnet passes (edge detection).
+ *    3. WAKEUP: Every 5 seconds, the ESP32 wakes up to process the ULP data.
+ *    4. LOGIC ENGINE:
+ *        - If Wind Speed > 0: Calculates speed and broadcasts immediately via BLE.
+ *        - If Speed Changes: Broadcasts immediately to show the change.
+ *        - If No Wind: Skips BLE transmission to save battery, incrementing a counter.
+ *        - Heartbeat: Every 60 seconds, it forces a broadcast (even if no wind) so Home
+ *          Assistant knows the sensor is still online.
  * * DATA PROTOCOL:
- * Uses BTHome V2 (Bluetooth Low Energy). Compatible with Home Assistant
- * "Bluetooth" and "BTHome" integrations out of the box.
+ *    Uses BTHome V2 (Bluetooth Low Energy). Compatible with Home Assistant and Shelly
  * * HARDWARE NOTES:
- * - Sensor Pin: GPIO 4 (Must be an RTC-capable pin).
- * - Pulses: 2 pulses per revolution (assuming 2 magnets).
- * - Radius: 0.071m (Center to cup middle).
- * - Calibration: 2.5x factor to compensate for cup drag/aerodynamics.
+ *    - Sensor Pin: GPIO 4 (must be an RTC-capable pin).
+ *    - Pulses: 2 pulses per revolution (assuming 2 magnets).
+ *    - Radius: 0.071m (center to cup middle).
+ *    - Calibration: 2.5x factor to compensate for cup drag/aerodynamics.
  * * POWER CONSUMPTION:
- * - Deep Sleep: ~15µA
- * - BLE Broadcast (1.5s): ~100mA
- * - Estimated Battery Life (1000mAh Li-ion): >1 year with 1-minute heartbeats.
+ *    - Deep Sleep: ~15µA (it depends by the board, less feautures is better)
+ *    - BLE Broadcast (1.5s): ~100mA
+ *    - Estimated Battery Life (1000mAh Li-ion): >1 year with 1-minute heartbeats.
  * ======================================================================================
  */
 
@@ -59,11 +58,11 @@ static const char *TAG = "ANEMOMETER";
                                             // ESP32-S3: GPIO 0-21
                                             // Avoid GPIO 0, 2, 12, and 15 for the sensor as they are "strapping pins"
                                             // and can prevent the ESP32 from booting if held LOW/HIGH by the magnet
-const float RADIUS_METERS      = 0.071;     // Distance from center to the middle of the cup (e.g., 5cm = 0.05m)
+const float RADIUS_METERS      = 0.078;     // Distance from center to the middle of the cup (e.g., 5cm = 0.05m)
 const float CALIBRATION_FACTOR = 2.5;       // Aerodynamic compensation (usually between 2.0 and 3.0)
 const int   PULSES_PER_REV     = 2;         // Set to 2 because we have 2 magnets
-const uint64_t SLEEP_TIME_US   = 5000000;   // 5 seconds sleep
-const int   HEARTBEAT_CYCLES   = 12;        // 12 * 5s = 60s update
+const uint64_t SLEEP_TIME      = 5;         // 5 seconds sleep
+const int   HEARTBEAT_CYCLES   = 60/SLEEP_TIME; // 12 * 5s = 60s update
 
 #define BATTERY_ADC_PIN         GPIO_NUM_14 // Must be an ADC-capable pin
                                             // Battery measurement (expects a resistor divider to keep ADC voltage <= 3.3V)
@@ -137,14 +136,21 @@ void init_ulp_program() {
     I_ST(R1, R2, 0),                                          // R2* = R1
 
     M_LABEL(1),                                               // LABEL 1
-    I_HALT()            // Stop and wait for the next timer trigger
+    #if defined(CONFIG_IDF_TARGET_ESP32S3)
+      I_HALT()                                                // Stop and wait for the next timer trigger
+    #else
+      I_DELAY(85000),                                         // WAIT 10ms (85000/8.5MHz) simple debouce
+      M_BX(0),                                                // GOTO LABEL 0
+    #endif
   };
 
   memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
   size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
   ulp_process_macros_and_load(PROG_START, ulp_program, &size);
 
-  ulp_set_wakeup_period(0, 10000); // Trigger ULP program every 10ms (100Hz)
+  #if defined(CONFIG_IDF_TARGET_ESP32S3)
+    ulp_set_wakeup_period(0, 10000); // Trigger ULP program every 10ms (100Hz)
+  #endif
 
   rtc_gpio_init(SENSOR_GPIO);
   rtc_gpio_set_direction(SENSOR_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
@@ -159,7 +165,7 @@ void init_ulp_program() {
 // --------------------------------------------------------------------------------------
 void setup() {
   // Logging is already initialized by ESP-IDF at boot
-  ESP_LOGI(TAG, "Wake up evey %d sec to process the ULP data...", SLEEP);
+  ESP_LOGI(TAG, "Wake up every %d sec to process the ULP data", SLEEP_TIME);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
@@ -171,7 +177,7 @@ void setup() {
     // 1. Calculate current speed
     float totalPulses = (float)transitions / 2.0;
     float totalTurns = totalPulses / (float)PULSES_PER_REV;
-    float rps = totalTurns / (SLEEP_TIME_US / 1000000.0);
+    float rps = totalTurns / (float)SLEEP_TIME;
     float speedMPS = rps * (2 * PI * RADIUS_METERS) * CALIBRATION_FACTOR;
 
     // Convert to int for easy comparison (e.g., 2.45 m/s becomes 245)
@@ -214,14 +220,14 @@ void setup() {
       ESP_LOGI(TAG, "Pulses: %d | RPS: %.2f | Wind Speed: %.2f m/s | Battery: %d%% (%.2fV) | MAC: %s (Reason: %s)",
           (int)transitions/2, rps, speedMPS, batteryPercent, (float)batteryVoltage/1000.0, deviceAddr.c_str(), speed_changed ? "Change" : "Heartbeat");
 
-      delay(1000); // Wait for scanner to catch the change
-                   // 500ms is the lower limit, 1 sec is more battery consuming but more safe
+      delay(1500); // Wait for scanner to catch the change
 
       pAdvertising->stop();
       NimBLEDevice::deinit(true);
     } else {
       // Silent cycle: increment heartbeat timer
       RTC_SLOW_MEM[VAR_SKIP_COUNT] = skip_count + 1;
+      ESP_LOGI(TAG, "Nothing to process");
     }
 
   } else {
@@ -230,9 +236,9 @@ void setup() {
   }
 
   // Go back to sleep
-  ESP_LOGI(TAG, "Entering Deep Sleep...");
+  ESP_LOGI(TAG, "Entering Deep Sleep");
   // Wake me up every SLEEP_TIME uS
-  esp_sleep_enable_timer_wakeup(SLEEP_TIME_US);
+  esp_sleep_enable_timer_wakeup(SLEEP_TIME*1000*1000);
 
   // Keep the RTC peripherals powered for the ULP to read the GPIOs
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
