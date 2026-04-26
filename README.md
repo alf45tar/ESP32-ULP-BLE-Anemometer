@@ -18,15 +18,15 @@ A high-efficiency, battery-powered wind speed sensor (Anemometer) using the ESP3
 
 ## 🛠 Hardware Requirements
 
-1.  **ESP32 or ESP32-S3 Development Board** (e.g., DevKit V1, WROOM-32, ESP32-S3 DevKit).
+1.  **ESP32 or ESP32-S3 Board**.
 2.  **Anemometer** (3-cup type with a Reed Switch).
-3.  **Battery:** Li-ion 18650 or LiPo (recommended).
+3.  **Battery:** Li-ion 18650 or LiPo.
 
 ### Bill of Materials
 
 | Item | Quantity | Notes |
 | :--- | :--- | :--- |
-| ESP32 development board | 1 | Use a board with an onboard battery sesnor (divider) if possible |
+| ESP32 board | 1 | Use a board with an onboard battery sensor (divider) if possible |
 | 3D-printed anemometer | 1 | Main wind-sensing body |
 | 608 bearing 8x22x7 mm | 1 | Very common bearing for shaft support |
 | M3 heat-set insert | 1 | For connecting the main body to the support |
